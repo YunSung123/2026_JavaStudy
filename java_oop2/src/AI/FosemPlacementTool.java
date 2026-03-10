@@ -3,39 +3,40 @@ package AI;
 import javax.swing.*;
 import javax.swing.border.LineBorder;
 import java.awt.*;
-import java.awt.event.AWTEventListener;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
+import java.awt.event.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class FosemPlacementTool extends JFrame {
 
-    // 4 x 8, 가로 4
-    private static final int BOARD_COLS = 4;
-    private static final int BOARD_ROWS = 8;
-
-    private static final int BENCH_COLS = 8;
-    private static final int BENCH_ROWS = 2;
-    private static final int BENCH_SIZE = BENCH_COLS * BENCH_ROWS;
+    // ===== 보드 설정 =====
+    private static final int BOARD_COLS = 4; // 가로 4
+    private static final int BOARD_ROWS = 8; // 세로 8
 
     private final CellPanel[][] boardCells = new CellPanel[BOARD_ROWS][BOARD_COLS];
-    private final CellPanel[] benchCells = new CellPanel[BENCH_SIZE];
 
-    private final JLabel infoLabel = new JLabel("유닛을 드래그해서 배치하세요.", SwingConstants.CENTER);
+    // ===== 챔피언 목록 =====
+    private final List<Unit> allUnits = new ArrayList<>();
+    private final JPanel championListPanel = new JPanel(new GridLayout(0, 8, 10, 10));
+
+    // ===== 우측 정보 =====
     private final JTextArea synergyArea = new JTextArea();
+    private final JLabel infoLabel = new JLabel("캐릭터를 클릭하거나 드래그해서 배치하세요.", SwingConstants.CENTER);
 
-    private CellPanel selectedCell;
+    // ===== 선택/드래그 =====
+    private CellPanel selectedBoardCell;
+    private Unit selectedListUnit;
 
-    // 드래그 상태
-    private CellPanel dragSource;
+    private CellPanel dragSourceCell;
     private Point pressScreenPoint;
     private boolean dragging;
     private JPanel glass;
     private JLabel dragGhost;
 
-    // 글에서 보이는 시너지 이름들
+    // ===== 시너지 순서 =====
     private static final List<String> SYNERGY_ORDER = List.of(
             "거인", "검사", "격투", "나룻잎", "멸룡", "모래", "무녀", "물", "바람", "보호",
             "사신", "서번트", "소환사", "아카츠키", "악마", "암살자", "에스파다", "연금술",
@@ -43,14 +44,16 @@ public class FosemPlacementTool extends JFrame {
     );
 
     public FosemPlacementTool() {
-        setTitle("포샘디펜스 배치툴");
-        setSize(1360, 920);
+        setTitle("포샘디펜스 배치 툴");
+        setSize(1450, 950);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
         initUI();
-        loadSampleUnits();
+        loadUnitsFromText("units.txt"); // 여기 텍스트 파일 불러옴
+        refreshChampionList();
         installGlobalDragListener();
+        refreshSynergyPanel();
 
         setVisible(true);
     }
@@ -58,6 +61,7 @@ public class FosemPlacementTool extends JFrame {
     private void initUI() {
         setLayout(new BorderLayout());
 
+        // ===== 상단 =====
         JPanel topPanel = new JPanel(new BorderLayout());
         topPanel.setBackground(new Color(235, 235, 235));
 
@@ -70,19 +74,20 @@ public class FosemPlacementTool extends JFrame {
 
         topPanel.add(titleLabel, BorderLayout.NORTH);
         topPanel.add(infoLabel, BorderLayout.SOUTH);
-
         add(topPanel, BorderLayout.NORTH);
 
+        // ===== 중앙 =====
         JPanel centerPanel = new JPanel(new BorderLayout());
         centerPanel.setBackground(new Color(18, 20, 28));
         centerPanel.setBorder(BorderFactory.createEmptyBorder(18, 18, 18, 18));
 
+        // ===== 배치판 =====
         JPanel boardPanel = new JPanel(new GridLayout(BOARD_ROWS, BOARD_COLS, 8, 8));
         boardPanel.setBackground(new Color(18, 20, 28));
 
         for (int r = 0; r < BOARD_ROWS; r++) {
             for (int c = 0; c < BOARD_COLS; c++) {
-                CellPanel cell = new CellPanel(CellType.BOARD, r, c);
+                CellPanel cell = new CellPanel(r, c);
                 boardCells[r][c] = cell;
                 boardPanel.add(cell);
             }
@@ -90,8 +95,9 @@ public class FosemPlacementTool extends JFrame {
 
         centerPanel.add(boardPanel, BorderLayout.CENTER);
 
+        // ===== 우측 시너지 =====
         JPanel rightPanel = new JPanel(new BorderLayout());
-        rightPanel.setPreferredSize(new Dimension(300, 0));
+        rightPanel.setPreferredSize(new Dimension(320, 0));
         rightPanel.setBackground(new Color(15, 16, 24));
         rightPanel.setBorder(BorderFactory.createCompoundBorder(
                 new LineBorder(new Color(70, 74, 92), 1),
@@ -109,18 +115,11 @@ public class FosemPlacementTool extends JFrame {
         synergyArea.setFont(new Font("맑은 고딕", Font.PLAIN, 14));
         synergyArea.setBackground(new Color(15, 16, 24));
         synergyArea.setForeground(new Color(220, 220, 220));
-        synergyArea.setText("배치된 유닛의 시너지가 여기에 표시됩니다.");
 
         JButton resetBtn = new JButton("초기화");
         resetBtn.setFocusPainted(false);
         resetBtn.setFont(new Font("맑은 고딕", Font.BOLD, 14));
-        resetBtn.addActionListener(e -> {
-            clearSelection();
-            clearBoardOnly();
-            loadSampleUnits();
-            refreshSynergyPanel();
-            infoLabel.setText("초기화 완료");
-        });
+        resetBtn.addActionListener(e -> resetBoard());
 
         JPanel rightTop = new JPanel(new BorderLayout());
         rightTop.setBackground(new Color(15, 16, 24));
@@ -133,30 +132,31 @@ public class FosemPlacementTool extends JFrame {
         centerPanel.add(rightPanel, BorderLayout.EAST);
         add(centerPanel, BorderLayout.CENTER);
 
-        JPanel benchWrapper = new JPanel(new BorderLayout());
-        benchWrapper.setBackground(new Color(12, 13, 20));
-        benchWrapper.setBorder(BorderFactory.createEmptyBorder(12, 18, 18, 18));
+        // ===== 하단 챔피언 목록 =====
+        JPanel bottomPanel = new JPanel(new BorderLayout());
+        bottomPanel.setBackground(new Color(12, 13, 20));
+        bottomPanel.setBorder(BorderFactory.createEmptyBorder(12, 18, 18, 18));
 
-        JLabel benchTitle = new JLabel("대기석");
-        benchTitle.setForeground(Color.WHITE);
-        benchTitle.setFont(new Font("맑은 고딕", Font.BOLD, 18));
-        benchTitle.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
+        JLabel championTitle = new JLabel("캐릭터 목록");
+        championTitle.setForeground(Color.WHITE);
+        championTitle.setFont(new Font("맑은 고딕", Font.BOLD, 18));
+        championTitle.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
 
-        JPanel benchPanel = new JPanel(new GridLayout(BENCH_ROWS, BENCH_COLS, 8, 8));
-        benchPanel.setBackground(new Color(12, 13, 20));
+        championListPanel.setBackground(new Color(20, 20, 24));
+        championListPanel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
 
-        for (int i = 0; i < BENCH_SIZE; i++) {
-            CellPanel cell = new CellPanel(CellType.BENCH, i / BENCH_COLS, i % BENCH_COLS);
-            benchCells[i] = cell;
-            benchPanel.add(cell);
-        }
+        JScrollPane scrollPane = new JScrollPane(championListPanel);
+        scrollPane.setBorder(null);
+        scrollPane.getViewport().setBackground(new Color(20, 20, 24));
+        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
 
-        benchWrapper.add(benchTitle, BorderLayout.NORTH);
-        benchWrapper.add(benchPanel, BorderLayout.CENTER);
+        bottomPanel.add(championTitle, BorderLayout.NORTH);
+        bottomPanel.add(scrollPane, BorderLayout.CENTER);
 
-        add(benchWrapper, BorderLayout.SOUTH);
+        bottomPanel.setPreferredSize(new Dimension(0, 300));
+        add(bottomPanel, BorderLayout.SOUTH);
 
-        // glass pane
+        // ===== glass pane =====
         glass = new JPanel(null);
         glass.setOpaque(false);
         setGlassPane(glass);
@@ -167,73 +167,77 @@ public class FosemPlacementTool extends JFrame {
         dragGhost.setBorder(new LineBorder(Color.YELLOW, 2));
         dragGhost.setFont(new Font("맑은 고딕", Font.BOLD, 12));
         glass.add(dragGhost);
-
-        refreshSynergyPanel();
     }
 
-    private void loadSampleUnits() {
-        for (CellPanel cell : benchCells) {
-            cell.setUnit(null);
+    private void loadUnitsFromText(String fileName) {
+        allUnits.clear();
+
+        File file = new File(fileName);
+        if (!file.exists()) {
+            JOptionPane.showMessageDialog(this,
+                    "units.txt 파일이 없습니다.\n프로젝트 실행 폴더에 units.txt를 넣어주세요.",
+                    "파일 없음", JOptionPane.WARNING_MESSAGE);
+            return;
         }
 
-        // 대표 샘플. 여기 계속 추가하면 됨.
-        List<Unit> sample = List.of(
-                new Unit("노말", "슬로스", "거인", "격투"),
-                new Unit("스페셜", "헤라클레스", "거인", "검사", "서번트"),
-                new Unit("레전드", "마인부우", "거인", "연금술", "악마"),
-                new Unit("노말", "란슬롯", "검사", "서번트"),
-                new Unit("레어", "아토가미 토카", "검사", "정령"),
-                new Unit("레전드", "쿠훌린", "서번트", "창술사"),
-                new Unit("레어", "네지", "격투", "나룻잎", "바람"),
-                new Unit("레전드", "나츠 드래그닐", "격투", "멸룡", "화염"),
-                new Unit("노말", "사루토비", "나룻잎", "소환사"),
-                new Unit("에픽", "사스케", "나룻잎", "암살자"),
-                new Unit("레전드", "토비라마", "물", "나룻잎"),
-                new Unit("스페셜", "웬디 마벨", "멸룡", "바람"),
-                new Unit("레전드", "유클리프", "멸룡", "병사장"),
-                new Unit("에픽", "테마리", "모래", "바람"),
-                new Unit("신화", "치요", "모래", "소환사"),
-                new Unit("스페셜", "엔마 아이", "무녀", "요괴"),
-                new Unit("레전드", "키요우", "무녀", "초능력"),
-                new Unit("노말", "요시노", "물", "정령"),
-                new Unit("레어", "아쿠아", "물", "천사"),
-                new Unit("신화", "리무르", "물", "악마"),
-                new Unit("레어", "미츠카이", "보호", "천사"),
-                new Unit("에픽", "레스티아", "보호", "정령"),
-                new Unit("레전드", "프랑켄슈타인", "보호", "서번트"),
-                new Unit("레전드", "토시로", "사신", "물"),
-                new Unit("신화", "켄파치", "사신", "검사"),
-                new Unit("스페셜", "잭 더 리퍼", "서번트", "암살자"),
-                new Unit("레어", "모모", "소환사", "악마"),
-                new Unit("레어", "카쿠즈", "아카츠키", "소환사"),
-                new Unit("신화", "토비", "아카츠키", "암살자"),
-                new Unit("에픽", "아케노", "악마", "무녀"),
-                new Unit("스페셜", "시호인", "암살자", "사신", "격투"),
-                new Unit("레전드", "코요테 스타크", "암살자", "에스파다"),
-                new Unit("레어", "알폰스", "연금술", "거인"),
-                new Unit("신화", "길가메쉬", "연금술", "서번트"),
-                new Unit("신화", "셋쇼마루", "요괴", "검사"),
-                new Unit("노말", "세라스 빅토리아", "저격", "흡혈"),
-                new Unit("노말", "요시노", "정령", "물"),
-                new Unit("노말", "메데이아", "주술", "서번트"),
-                new Unit("레어", "히단", "창술사", "아카츠키"),
-                new Unit("노말", "님프", "천사", "바람"),
-                new Unit("신화", "타츠마키", "초능력", "바람"),
-                new Unit("스페셜", "샤나", "화염", "천사"),
-                new Unit("레어", "알케이드", "흡혈", "격투")
-        );
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
 
-        for (int i = 0; i < Math.min(sample.size(), BENCH_SIZE); i++) {
-            benchCells[i].setUnit(sample.get(i));
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+
+                if (line.isEmpty() || line.startsWith("#")) continue;
+
+                String[] parts = line.split(",");
+                if (parts.length < 3) continue;
+
+                String tier = parts[0].trim();
+                String name = parts[1].trim();
+
+                List<String> traits = new ArrayList<>();
+                for (int i = 2; i < parts.length; i++) {
+                    String trait = parts[i].trim();
+                    if (!trait.isEmpty()) {
+                        traits.add(trait);
+                    }
+                }
+
+                allUnits.add(new Unit(tier, name, traits, "human.png"));
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                    "units.txt 읽기 실패: " + e.getMessage(),
+                    "오류", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    private void clearBoardOnly() {
+    private void refreshChampionList() {
+        championListPanel.removeAll();
+
+        for (Unit unit : allUnits) {
+            ChampionCard card = new ChampionCard(unit);
+            championListPanel.add(card);
+        }
+
+        championListPanel.revalidate();
+        championListPanel.repaint();
+    }
+
+    private void resetBoard() {
+        clearSelection();
+
         for (int r = 0; r < BOARD_ROWS; r++) {
             for (int c = 0; c < BOARD_COLS; c++) {
                 boardCells[r][c].setUnit(null);
             }
         }
+
+        selectedListUnit = null;
+        refreshSynergyPanel();
+        infoLabel.setText("초기화 완료");
     }
 
     private void refreshSynergyPanel() {
@@ -270,16 +274,10 @@ public class FosemPlacementTool extends JFrame {
         if (active.isEmpty()) {
             sb.append("아직 배치된 시너지가 없음");
         } else {
-            sb.append("[활성 중인 시너지 개수 집계]\n");
+            sb.append("[활성 시너지]\n");
             for (Map.Entry<String, Integer> e : active) {
                 sb.append("• ").append(e.getKey()).append(" : ").append(e.getValue()).append("\n");
             }
-        }
-
-        sb.append("\n-------------------------\n");
-        sb.append("글 기준 시너지 목록\n");
-        for (String synergy : SYNERGY_ORDER) {
-            sb.append("- ").append(synergy).append("\n");
         }
 
         synergyArea.setText(sb.toString());
@@ -290,7 +288,7 @@ public class FosemPlacementTool extends JFrame {
         AWTEventListener globalListener = event -> {
             if (!(event instanceof MouseEvent e)) return;
 
-            if (pressScreenPoint == null && dragSource == null) return;
+            if (pressScreenPoint == null && dragSourceCell == null) return;
 
             if (e.getID() == MouseEvent.MOUSE_DRAGGED) {
                 handleGlobalDragged(e);
@@ -306,8 +304,8 @@ public class FosemPlacementTool extends JFrame {
     }
 
     private void handleGlobalDragged(MouseEvent e) {
-        if (dragSource == null) return;
-        if (dragSource.getUnit() == null) return;
+        if (dragSourceCell == null) return;
+        if (dragSourceCell.getUnit() == null) return;
 
         if (!dragging) {
             int dx = Math.abs(e.getXOnScreen() - pressScreenPoint.x);
@@ -321,15 +319,15 @@ public class FosemPlacementTool extends JFrame {
     }
 
     private void handleGlobalReleased(MouseEvent e) {
-        if (dragSource == null) {
+        if (dragSourceCell == null) {
             pressScreenPoint = null;
             return;
         }
 
         if (dragging) {
             CellPanel target = findCellAtScreen(e.getXOnScreen(), e.getYOnScreen());
-            if (target != null && target != dragSource) {
-                swapUnits(dragSource, target);
+            if (target != null && target != dragSourceCell) {
+                swapUnits(dragSourceCell, target);
                 infoLabel.setText("드래그 이동 완료");
             } else {
                 infoLabel.setText("이동 취소");
@@ -339,18 +337,18 @@ public class FosemPlacementTool extends JFrame {
         }
 
         dragging = false;
-        dragSource = null;
+        dragSourceCell = null;
         pressScreenPoint = null;
     }
 
     private void startDragGhost(int screenX, int screenY) {
-        Unit unit = dragSource.getUnit();
+        Unit unit = dragSourceCell.getUnit();
         if (unit == null) return;
 
         dragGhost.setText("<html><center>" + unit.name + "<br>[" + String.join("/", unit.traits) + "]</center></html>");
         dragGhost.setBackground(new Color(35, 35, 45, 220));
         dragGhost.setForeground(Color.WHITE);
-        dragGhost.setSize(120, 64);
+        dragGhost.setSize(130, 68);
 
         glass.setVisible(true);
         dragGhost.setVisible(true);
@@ -391,53 +389,41 @@ public class FosemPlacementTool extends JFrame {
     }
 
     private void clearSelection() {
-        if (selectedCell != null) {
-            selectedCell.setSelected(false);
-            selectedCell = null;
+        if (selectedBoardCell != null) {
+            selectedBoardCell.setSelected(false);
+            selectedBoardCell = null;
         }
+        selectedListUnit = null;
     }
 
-    private void handleCellClick(CellPanel clicked) {
-        if (dragging) return;
-
-        if (selectedCell == null) {
-            if (clicked.getUnit() != null) {
-                selectedCell = clicked;
-                clicked.setSelected(true);
-                infoLabel.setText(clicked.getUnit().name + " 선택됨");
-            }
-            return;
-        }
-
-        if (selectedCell == clicked) {
-            clearSelection();
-            infoLabel.setText("선택 해제");
-            return;
-        }
-
-        swapUnits(selectedCell, clicked);
-        clearSelection();
-        infoLabel.setText("클릭 이동 완료");
+    private void placeUnitFromList(Unit unit, CellPanel targetCell) {
+        if (targetCell == null) return;
+        targetCell.setUnit(unit.copy());
+        refreshSynergyPanel();
+        infoLabel.setText(unit.name + " 배치 완료");
     }
 
-    enum CellType {
-        BOARD, BENCH
-    }
-
+    // ===================== 데이터 클래스 =====================
     static class Unit {
         String tier;
         String name;
         List<String> traits;
+        String imagePath;
 
-        public Unit(String tier, String name, String... traits) {
+        public Unit(String tier, String name, List<String> traits, String imagePath) {
             this.tier = tier;
             this.name = name;
-            this.traits = Arrays.asList(traits);
+            this.traits = traits;
+            this.imagePath = imagePath;
+        }
+
+        public Unit copy() {
+            return new Unit(tier, name, new ArrayList<>(traits), imagePath);
         }
     }
 
+    // ===================== 배치 칸 =====================
     class CellPanel extends JPanel {
-        private final CellType type;
         private final int row;
         private final int col;
         private final JLabel label = new JLabel("", SwingConstants.CENTER);
@@ -445,15 +431,14 @@ public class FosemPlacementTool extends JFrame {
         private Unit unit;
         private boolean selected;
 
-        public CellPanel(CellType type, int row, int col) {
-            this.type = type;
+        public CellPanel(int row, int col) {
             this.row = row;
             this.col = col;
 
             setLayout(new BorderLayout());
-            setPreferredSize(new Dimension(120, 82));
+            setPreferredSize(new Dimension(110, 110)); // 정사각형
             setOpaque(true);
-            setBackground(type == CellType.BOARD ? new Color(72, 74, 90) : new Color(62, 64, 76));
+            setBackground(new Color(72, 74, 90));
             setBorder(new LineBorder(new Color(160, 165, 185), 2));
 
             label.setForeground(Color.WHITE);
@@ -466,14 +451,14 @@ public class FosemPlacementTool extends JFrame {
                 @Override
                 public void mousePressed(MouseEvent e) {
                     if (unit != null) {
-                        dragSource = CellPanel.this;
+                        dragSourceCell = CellPanel.this;
                         pressScreenPoint = e.getLocationOnScreen();
                     }
                 }
 
                 @Override
                 public void mouseClicked(MouseEvent e) {
-                    handleCellClick(CellPanel.this);
+                    handleBoardCellClick(CellPanel.this);
                 }
             };
 
@@ -498,11 +483,13 @@ public class FosemPlacementTool extends JFrame {
         private void refreshView() {
             if (unit == null) {
                 label.setText("빈칸");
-                setBackground(type == CellType.BOARD ? new Color(72, 74, 90) : new Color(62, 64, 76));
+                setBackground(new Color(72, 74, 90));
+                setToolTipText(null);
             } else {
                 String traitText = String.join("/", unit.traits);
                 label.setText("<html><center>" + unit.name + "<br>[" + traitText + "]</center></html>");
                 setBackground(colorByTier(unit.tier));
+                setToolTipText(makeTooltipText(unit));
             }
             refreshBorder();
             repaint();
@@ -515,19 +502,119 @@ public class FosemPlacementTool extends JFrame {
                 setBorder(new LineBorder(new Color(160, 165, 185), 2));
             }
         }
+    }
 
-        private Color colorByTier(String tier) {
-            return switch (tier) {
-                case "노말" -> new Color(120, 120, 120);
-                case "레어" -> new Color(66, 110, 180);
-                case "스페셜" -> new Color(148, 86, 190);
-                case "에픽" -> new Color(195, 128, 55);
-                case "레전드" -> new Color(186, 72, 72);
-                case "신화" -> new Color(220, 180, 70);
-                case "울티" -> new Color(80, 170, 150);
-                default -> new Color(100, 100, 100);
-            };
+    private void handleBoardCellClick(CellPanel clicked) {
+        if (dragging) return;
+
+        if (selectedListUnit != null) {
+            placeUnitFromList(selectedListUnit, clicked);
+            selectedListUnit = null;
+            return;
         }
+
+        if (selectedBoardCell == null) {
+            if (clicked.getUnit() != null) {
+                selectedBoardCell = clicked;
+                clicked.setSelected(true);
+                infoLabel.setText(clicked.getUnit().name + " 선택됨");
+            }
+            return;
+        }
+
+        if (selectedBoardCell == clicked) {
+            clearSelection();
+            infoLabel.setText("선택 해제");
+            return;
+        }
+
+        swapUnits(selectedBoardCell, clicked);
+        clearSelection();
+        infoLabel.setText("클릭 이동 완료");
+    }
+
+    // ===================== 챔피언 카드 =====================
+    class ChampionCard extends JPanel {
+        private final Unit unit;
+
+        public ChampionCard(Unit unit) {
+            this.unit = unit;
+
+            setLayout(new BorderLayout());
+            setPreferredSize(new Dimension(95, 110));
+            setBackground(new Color(34, 36, 44));
+            setBorder(new LineBorder(new Color(90, 100, 120), 1, true));
+
+            JLabel imageLabel = new JLabel();
+            imageLabel.setHorizontalAlignment(SwingConstants.CENTER);
+            imageLabel.setPreferredSize(new Dimension(95, 75));
+
+            ImageIcon icon = loadChampionIcon(unit.imagePath);
+            if (icon != null) {
+                Image img = icon.getImage().getScaledInstance(70, 70, Image.SCALE_SMOOTH);
+                imageLabel.setIcon(new ImageIcon(img));
+            } else {
+                imageLabel.setText("IMG");
+                imageLabel.setForeground(Color.LIGHT_GRAY);
+            }
+
+            JLabel nameLabel = new JLabel(unit.name, SwingConstants.CENTER);
+            nameLabel.setForeground(Color.WHITE);
+            nameLabel.setFont(new Font("맑은 고딕", Font.BOLD, 13));
+
+            add(imageLabel, BorderLayout.CENTER);
+            add(nameLabel, BorderLayout.SOUTH);
+
+            setToolTipText(makeTooltipText(unit));
+
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    setBorder(new LineBorder(new Color(255, 170, 80), 2, true));
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    setBorder(new LineBorder(new Color(90, 100, 120), 1, true));
+                }
+
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    clearSelection();
+                    selectedListUnit = unit;
+                    infoLabel.setText(unit.name + " 선택됨 → 배치판 빈칸 클릭");
+                }
+            });
+        }
+    }
+
+    private ImageIcon loadChampionIcon(String imagePath) {
+        File file = new File(imagePath);
+        if (!file.exists()) return null;
+        return new ImageIcon(imagePath);
+    }
+
+    private String makeTooltipText(Unit unit) {
+        return "<html>"
+                + "<div style='padding:6px;'>"
+                + "<b style='font-size:13px;'>" + unit.name + "</b><br><br>"
+                + "등급: " + unit.tier + "<br>"
+                + "시너지: " + String.join(", ", unit.traits)
+                + "</div>"
+                + "</html>";
+    }
+
+    private Color colorByTier(String tier) {
+        return switch (tier) {
+            case "노말" -> new Color(120, 120, 120);
+            case "레어" -> new Color(66, 110, 180);
+            case "스페셜" -> new Color(148, 86, 190);
+            case "에픽" -> new Color(195, 128, 55);
+            case "레전드" -> new Color(186, 72, 72);
+            case "신화" -> new Color(220, 180, 70);
+            case "울티" -> new Color(80, 170, 150);
+            default -> new Color(100, 100, 100);
+        };
     }
 
     public static void main(String[] args) {
