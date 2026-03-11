@@ -93,22 +93,6 @@ public class MyFrame extends JFrame {
                     y = INIT_Y;
                 }
 
-                if (x > 350) {
-                    x = 350;
-                }
-
-                if (y > 350) {
-                    y = 350;
-                }
-
-                if (x < 50) {
-                    x = 50;
-                }
-
-                if (y < 50) {
-                    y = 50;
-                }
-
                 player.setLocation(x, y);
                 // 카운트 1 증가
                 count++;
